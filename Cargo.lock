@@ -739,15 +739,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 
 [[package]]
-name = "ina219"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0bf6fbccad9bbc5de949ead40a0fcf94b77d676c27fed74d8d37fc7a30000dc"
-dependencies = [
- "embedded-hal-async",
-]
-
-[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -780,10 +771,10 @@ dependencies = [
  "embassy-rp",
  "embassy-sync",
  "embassy-time",
+ "embedded-hal-async",
  "embedded-io-async 0.7.0",
  "embedded-storage",
  "heapless",
- "ina219",
  "panic-probe",
  "portable-atomic",
  "static_cell",

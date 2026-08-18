@@ -13,11 +13,8 @@ use embassy_rp::gpio::{Level, Output};
 use embassy_rp::i2c::{self, I2c};
 use embassy_rp::peripherals::{I2C0, UART0};
 use embassy_rp::uart::{self, BufferedUart};
-use embassy_time::{Duration, Ticker, Timer, with_timeout};
+use embassy_time::{Duration, Ticker, Timer};
 use static_cell::StaticCell;
-use ina219::AsyncIna219;
-use ina219::address::Address;
-use ina219::calibration::UnCalibrated;
 
 // Debug builds: use defmt-rtt for logging and panic-probe for panic handling
 #[cfg(debug_build)]
@@ -57,20 +54,12 @@ macro_rules! log_warn {
     ($($arg:tt)*) => {};
 }
 
-#[cfg(debug_build)]
-macro_rules! log_error {
-    ($($arg:tt)*) => { defmt::error!($($arg)*) };
-}
-#[cfg(release_build)]
-macro_rules! log_error {
-    ($($arg:tt)*) => {};
-}
-
 mod config;
 mod direct_flash;
 mod flash_store;
 mod fw_update;
 mod power_control;
+mod sensor;
 mod uart_handler;
 
 use config::*;
@@ -196,31 +185,18 @@ async fn main(_spawner: Spawner) {
 
     log_info!("UART initialized at {} baud", BAUD_RATE);
 
-    // Initialize I2C for INA219
+    // Initialize I2C for the power monitor
     let mut i2c_config = i2c::Config::default();
     i2c_config.frequency = 100_000;
     let i2c = I2c::new_async(p.I2C0, p.PIN_9, p.PIN_8, Irqs, i2c_config);
 
     log_info!("I2C initialized");
 
-    // Wrap the INA219 without a boot-time reset/probe: `new_unchecked` performs
-    // no I2C, so a sensor that is slow to come up cannot disable telemetry for
-    // the whole boot. The device's power-on defaults (continuous shunt+bus,
-    // 12-bit, 32 V / 320 mV) are exactly the mode we need, and telemetry reads
-    // the raw bus/shunt registers and derives current/power itself, so no
-    // calibration write is required. A transiently unresponsive sensor
-    // self-heals: the timeout-guarded reads below return zeros until it
-    // answers again.
-    let mut ina219 = match Address::from_byte(INA219_ADDR) {
-        Ok(address) => {
-            log_info!("INA219 at address 0x{:02X} (POR defaults)", INA219_ADDR);
-            Some(AsyncIna219::new_unchecked(i2c, address, UnCalibrated))
-        }
-        Err(_) => {
-            log_error!("Invalid INA219 address constant - telemetry disabled");
-            None
-        }
-    };
+    // Detect which power monitor this hardware revision carries (INA700 on
+    // newer boards, INA219 otherwise) and take ownership of the bus. Both
+    // run on power-on defaults; reads are timeout-bounded and self-heal.
+    let mut power_sensor = sensor::detect(i2c, INA219_ADDR).await;
+    log_info!("Power sensor: {}", power_sensor.kind());
 
     log_info!("Entering main loop");
 
@@ -298,44 +274,10 @@ async fn main(_spawner: Spawner) {
                     }
                 }
 
-                // Read power metrics from INA219 (zeroed if the sensor is
-                // unavailable or a read fails - we still stream a status line).
-                // Each I2C read is bounded by a timeout: a stuck bus (a wedged
-                // or flaky INA219 holding SDA) makes the embassy-rp read future
-                // never complete, which would otherwise freeze the loop - and
-                // with it the command interface. with_timeout keeps us alive.
-                const I2C_TIMEOUT: Duration = Duration::from_millis(50);
-                let (voltage_mv, current_ma, power_mw) = match ina219.as_mut() {
-                    Some(dev) => match with_timeout(I2C_TIMEOUT, dev.bus_voltage()).await {
-                        Ok(Ok(bus_voltage)) => {
-                            let voltage_mv = bus_voltage.voltage_mv() as f32;
-                            // Current = Shunt Voltage / Shunt Resistance
-                            // shunt_voltage_uv / 1000 = mV, then / 10 (0.01 ohm) = mA
-                            let (current_ma, power_mw) =
-                                match with_timeout(I2C_TIMEOUT, dev.shunt_voltage()).await {
-                                    Ok(Ok(shunt_voltage)) => {
-                                        let current_ma =
-                                            shunt_voltage.shunt_voltage_uv() as f32 / 10.0;
-                                        (current_ma, voltage_mv * current_ma / 1000.0)
-                                    }
-                                    _ => {
-                                        log_warn!("Failed to read shunt voltage");
-                                        (0.0, 0.0)
-                                    }
-                                };
-                            (voltage_mv, current_ma, power_mw)
-                        }
-                        _ => {
-                            // Stream zeros this tick; reads self-heal once the
-                            // sensor answers. Deliberately no recovery writes:
-                            // an INA219 reset write on a marginal bus can wedge
-                            // the I2C controller.
-                            log_error!("Failed to read INA219 bus voltage");
-                            (0.0, 0.0, 0.0)
-                        }
-                    },
-                    None => (0.0, 0.0, 0.0),
-                };
+                // Read power metrics (zeros if the sensor is absent or a read
+                // fails - we still stream a status line, and reads self-heal
+                // once the sensor answers; see sensor.rs).
+                let (voltage_mv, current_ma, power_mw) = power_sensor.read().await;
 
                 // Determine power state from GPIO
                 let power_state = if power_ctrl.is_on() {

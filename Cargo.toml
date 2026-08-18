@@ -20,8 +20,9 @@ embedded-storage = "0.3"
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
 
-# INA219 power monitor driver
-ina219 = { version = "0.2", default-features = false, features = ["async"] }
+# Power monitors (INA219/INA700) are driven via raw register reads over the
+# embedded-hal-async I2C trait; see sensor.rs.
+embedded-hal-async = "1"
 
 # Async utilities for the buffered-UART command/telemetry loop
 embassy-futures = "0.1"
