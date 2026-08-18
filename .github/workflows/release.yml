@@ -1,0 +1,40 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: thumbv6m-none-eabi
+          components: llvm-tools
+
+      - name: Install cargo-binutils (rust-objcopy)
+        run: cargo install cargo-binutils
+
+      - name: Build and package UF2 (release profile, no debug logging)
+        run: ./package.sh release
+
+      - name: Verify build artifacts
+        run: |
+          echo "Build artifacts (release profile, no debug logging):"
+          ls -la target/thumbv6m-none-eabi/release/jetkvm-dc-extension
+          ls -la jetkvm-dc-extension.uf2
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v1
+        with:
+          files: jetkvm-dc-extension.uf2

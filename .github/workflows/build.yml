@@ -13,45 +13,36 @@ jobs:
   build:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request_review' || github.event.review.state == 'approved'
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v5
-      with:
-        submodules: recursive
+      - name: Checkout code
+        uses: actions/checkout@v5
 
-    - name: Set up Pico SDK
-      run: |
-        # Install dependencies
-        sudo apt-get update &&
-        sudo apt install \
-          cmake python3 build-essential \
-          gcc-arm-none-eabi \
-          libnewlib-arm-none-eabi \
-          libstdc++-arm-none-eabi-newlib
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: thumbv6m-none-eabi
+          components: clippy, llvm-tools
 
-        # Download and set up Pico SDK
-        cd $HOME
-        git clone https://github.com/raspberrypi/pico-sdk.git
-        cd pico-sdk
-        git submodule update --init
+      - name: Install cargo-binutils (rust-objcopy)
+        run: cargo install cargo-binutils
 
-        echo "PICO_SDK_PATH=$HOME/pico-sdk" >> $GITHUB_ENV
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
 
-    - name: Build firmware
-      run: |
-        cmake . -DPICO_SDK_PATH=$PICO_SDK_PATH
-        make -j$(nproc)
+      - name: Build and package UF2 (dev profile with debug logging)
+        run: ./package.sh debug
 
-    - name: Verify build artifacts
-      run: |
-        echo "Build artifacts:"
-        find . -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.hex" | head -10
+      - name: Verify build artifacts
+        run: |
+          echo "Build artifacts (dev profile with debug logging):"
+          ls -la target/thumbv6m-none-eabi/debug/jetkvm-dc-extension
+          ls -la jetkvm-dc-extension.uf2
 
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: jetkvm-dc-extension-${{ github.sha }}.uf2
-        path: |
-          *.uf2
-        retention-days: 30
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: jetkvm-dc-extension-debug-${{ github.sha }}.uf2
+          path: jetkvm-dc-extension.uf2
+          retention-days: 30

@@ -1,3 +1,23 @@
-build/
-.vscode
+# Build artifacts
+target/
+
+# Cargo lock (library best practice, but can be committed for binaries)
+# Cargo.lock
+
+# Backup files
+*.bak
+*~
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
 .DS_Store
+Thumbs.db
+
+# Firmware build outputs (regenerable from cargo + objcopy/bin2uf2)
+*.bin
+*.uf2

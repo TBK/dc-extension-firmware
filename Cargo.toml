@@ -1,0 +1,48 @@
+[package]
+name = "jetkvm-dc-extension"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "JetKVM DC Power Extension Firmware"
+
+[dependencies]
+# Embassy async runtime and HAL
+embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
+embassy-rp = { version = "0.10", features = ["time-driver", "critical-section-impl", "rp2040"] }
+embassy-time = { version = "0.5" }
+
+# Cortex-M support
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+
+# INA219 power monitor driver
+ina219 = { version = "0.2", default-features = false, features = ["async"] }
+
+# Async utilities for the buffered-UART command/telemetry loop
+embassy-futures = "0.1"
+embedded-io-async = "0.7"
+static_cell = "2"
+# thumbv6m has no native atomic CAS; route it through critical-section (the
+# impl comes from embassy-rp's critical-section-impl feature) so static_cell
+# and other portable-atomic users build.
+portable-atomic = { version = "1", default-features = false, features = ["critical-section"] }
+
+# Logging and debugging (conditionally used based on profile)
+defmt = "1"
+defmt-rtt = "1"
+panic-probe = { version = "1", features = ["print-defmt"] }
+
+# Utilities
+heapless = "0.9"
+
+[profile.release]
+lto = true
+opt-level = "s"
+codegen-units = 1
+debug = false
+strip = true
+
+[profile.dev]
+opt-level = 1      # Some optimization for reasonable performance
+debug = true       # Keep debug info for probe-rs debugging
