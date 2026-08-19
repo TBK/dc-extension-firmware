@@ -1,6 +1,6 @@
 [package]
 name = "jetkvm-dc-extension"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.95"
 license = "MIT"
@@ -9,8 +9,12 @@ description = "JetKVM DC Power Extension Firmware"
 [dependencies]
 # Embassy async runtime and HAL
 embassy-executor = { version = "0.10", features = ["platform-cortex-m", "executor-thread"] }
-embassy-rp = { version = "0.10", features = ["time-driver", "critical-section-impl", "rp2040"] }
+embassy-rp = { version = "0.10", features = ["time-driver", "critical-section-impl", "rp2040", "boot2-none"] }
 embassy-time = { version = "0.5" }
+embassy-sync = "0.8"
+# Power-loss-safe firmware updates: DFU partition writes + swap state
+embassy-boot-rp = "0.10"
+embedded-storage = "0.3"
 
 # Cortex-M support
 cortex-m = "0.7"

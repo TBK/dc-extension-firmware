@@ -1,0 +1,25 @@
+[package]
+name = "jetkvm-dc-bootloader"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "embassy-boot bootloader for the JetKVM DC Power Extension"
+
+# Standalone crate - not part of the application's workspace/build.
+[workspace]
+
+[dependencies]
+embassy-rp = { version = "0.10", features = ["rp2040"] }
+embassy-boot-rp = "0.10"
+embassy-sync = "0.8"
+embassy-time = "0.5"
+cortex-m = { version = "0.7", features = ["inline-asm", "critical-section-single-core"] }
+cortex-m-rt = "0.7"
+embedded-storage = "0.3"
+
+[profile.release]
+lto = true
+opt-level = "s"
+codegen-units = 1
+debug = false
+strip = true

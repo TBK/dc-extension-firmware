@@ -67,13 +67,15 @@ macro_rules! log_error {
 }
 
 mod config;
+mod direct_flash;
 mod flash_store;
+mod fw_update;
 mod power_control;
-mod ram_flash;
 mod uart_handler;
 
 use config::*;
-use flash_store::{DcFlash, FlashStore, PowerState, RestoreMode};
+use direct_flash::DirectFlash;
+use flash_store::{FlashStore, PowerState, RestoreMode, SharedFlash};
 use power_control::PowerControl;
 use uart_handler::{Command, UartHandler};
 
@@ -140,6 +142,12 @@ async fn main(_spawner: Spawner) {
     let (tx, rx) = uart.split();
     let mut uart_handler = UartHandler::new(tx, rx);
 
+    // Take over the watchdog the bootloader armed: feeding it from the main
+    // loop proves liveness; a hang resets the chip, and an unconfirmed update
+    // is then reverted by the bootloader.
+    let mut watchdog = embassy_rp::watchdog::Watchdog::new(p.WATCHDOG);
+    watchdog.start(Duration::from_secs(8));
+
     // Let the power rails and the INA219 settle before the first I2C access
     // (matches the C firmware's 1 s boot settle). Must come after
     // embassy_rp::init, which sets up the time driver.
@@ -148,9 +156,12 @@ async fn main(_spawner: Spawner) {
     log_info!("JetKVM DC Power Extension starting...");
     log_info!("Version: {} {}", NAME, VERSION);
 
-    // Initialize flash for persistent storage (reads are memory-mapped XIP;
-    // writes go through ram_flash)
-    let flash = DcFlash::new_blocking(p.FLASH);
+    // Flash is shared between the settings store and the firmware updater;
+    // all erase/program goes through the direct bootrom sequence.
+    static FLASH: StaticCell<SharedFlash> = StaticCell::new();
+    let flash: &'static SharedFlash = FLASH.init(embassy_sync::blocking_mutex::Mutex::new(
+        core::cell::RefCell::new(DirectFlash),
+    ));
     let mut flash_store = FlashStore::new(flash);
 
     log_info!(
@@ -215,6 +226,7 @@ async fn main(_spawner: Spawner) {
 
     // Telemetry cadence: one status line per second, matching the C firmware.
     let mut ticker = Ticker::every(Duration::from_secs(1));
+    let mut boot_confirmed = false;
 
     // Main loop: react to incoming commands the instant they arrive (RX is
     // buffered in the background) while still emitting telemetry once a second.
@@ -252,12 +264,40 @@ async fn main(_spawner: Spawner) {
                         uart_handler.send_version().await;
                         log_info!("Sent version info");
                     }
+                    Command::FwUpdate => {
+                        // Blocks the telemetry stream for the duration of the
+                        // transfer; on success this resets and the bootloader
+                        // installs the update.
+                        log_info!("Firmware update requested");
+                        fw_update::run(&mut uart_handler, flash, &mut watchdog).await;
+                        log_warn!("Firmware update aborted");
+                    }
                     Command::Unknown => {
                         log_warn!("Unknown command received");
                     }
                 }
             }
             Either::Second(_) => {
+                watchdog.feed(Duration::from_secs(8));
+
+                // First healthy telemetry tick: confirm this image to the
+                // bootloader so an update is not reverted on the next reset.
+                // Only writes the state sector when a swap actually happened -
+                // marking unconditionally would erase+program it every boot.
+                if !boot_confirmed {
+                    boot_confirmed = true;
+                    let config = embassy_boot_rp::FirmwareUpdaterConfig::from_linkerfile_blocking(
+                        flash, flash,
+                    );
+                    let mut aligned = embassy_boot_rp::AlignedBuffer([0u8; 1]);
+                    let mut updater =
+                        embassy_boot_rp::BlockingFirmwareUpdater::new(config, &mut aligned.0);
+                    if matches!(updater.get_state(), Ok(embassy_boot_rp::State::Swap)) {
+                        let _ = updater.mark_booted();
+                        log_info!("swap confirmed as booted");
+                    }
+                }
+
                 // Read power metrics from INA219 (zeroed if the sensor is
                 // unavailable or a read fails - we still stream a status line).
                 // Each I2C read is bounded by a timeout: a stuck bus (a wedged

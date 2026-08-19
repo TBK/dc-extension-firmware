@@ -3,20 +3,25 @@
 //! Uses a circular buffer in flash to minimize wear. Each entry is stored
 //! in a separate flash page, with automatic sector erase when full.
 
-use embassy_rp::flash::{Blocking, ERASE_SIZE, Flash, PAGE_SIZE};
-use embassy_rp::peripherals::FLASH;
+use core::cell::RefCell;
+
+use embassy_sync::blocking_mutex::Mutex;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embedded_storage::nor_flash::{NorFlash, ReadNorFlash};
 
 use crate::config::FLASH_TARGET_OFFSET;
+use crate::direct_flash::DirectFlash;
 
 /// Total flash size of the RP2040 board (2 MiB)
-pub const FLASH_SIZE: usize = 2 * 1024 * 1024;
+pub const FLASH_SIZE: u32 = 2 * 1024 * 1024;
 
-/// Blocking flash driver over the on-board flash (no DMA - our reads
-/// are memory-mapped XIP and writes are blocking ROM calls)
-pub type DcFlash<'d> = Flash<'d, FLASH, Blocking, FLASH_SIZE>;
+/// The flash driver shared between the settings store and the firmware
+/// updater (embassy-boot needs the same NorFlash for its DFU/state
+/// partitions). All erase/program goes through the direct bootrom sequence.
+pub type SharedFlash = Mutex<NoopRawMutex, RefCell<DirectFlash<FLASH_SIZE>>>;
 
-const FLASH_PAGE_SIZE: usize = PAGE_SIZE;
-const FLASH_SECTOR_SIZE: usize = ERASE_SIZE;
+const FLASH_PAGE_SIZE: usize = 256;
+const FLASH_SECTOR_SIZE: usize = 4096;
 const ENTRIES_PER_SECTOR: usize = FLASH_SECTOR_SIZE / FLASH_PAGE_SIZE;
 const INVALID_BYTE: u8 = 0xFF;
 
@@ -77,14 +82,14 @@ impl Default for FlashEntry {
 }
 
 /// Flash store for persistent state
-pub struct FlashStore<'d> {
-    flash: DcFlash<'d>,
+pub struct FlashStore {
+    flash: &'static SharedFlash,
     current_entry: FlashEntry,
 }
 
-impl<'d> FlashStore<'d> {
+impl FlashStore {
     /// Initialize flash store, reading last valid entry
-    pub fn new(flash: DcFlash<'d>) -> Self {
+    pub fn new(flash: &'static SharedFlash) -> Self {
         let mut store = Self {
             flash,
             current_entry: FlashEntry::default(),
@@ -101,7 +106,10 @@ impl<'d> FlashStore<'d> {
         for i in (0..ENTRIES_PER_SECTOR).rev() {
             let offset = FLASH_TARGET_OFFSET + (i * FLASH_PAGE_SIZE) as u32;
 
-            if self.flash.blocking_read(offset, &mut buf).is_ok()
+            if self
+                .flash
+                .lock(|f| f.borrow_mut().read(offset, &mut buf))
+                .is_ok()
                 && buf[0] != INVALID_BYTE
                 && let (Some(power_state), Some(restore_mode)) = (
                     PowerState::from_byte(buf[0]),
@@ -120,36 +128,39 @@ impl<'d> FlashStore<'d> {
     }
 
     /// Write an entry to flash.
-    ///
-    /// Erase/program go through `ram_flash` (direct bootrom sequence); the
-    /// embassy-rp blocking flash path hangs on this board's hardware.
     fn write_entry(&mut self, power_state: PowerState, restore_mode: RestoreMode) {
-        // Find the next free slot
-        let mut entry_index = 0;
-        let mut buf = [0u8; 1];
+        self.flash.lock(|f| {
+            let mut f = f.borrow_mut();
 
-        for i in 0..ENTRIES_PER_SECTOR {
-            let offset = FLASH_TARGET_OFFSET + (i * FLASH_PAGE_SIZE) as u32;
-            if self.flash.blocking_read(offset, &mut buf).is_ok() && buf[0] == INVALID_BYTE {
-                entry_index = i;
-                break;
+            // Find the next free slot
+            let mut entry_index = 0;
+            let mut buf = [0u8; 1];
+            for i in 0..ENTRIES_PER_SECTOR {
+                let offset = FLASH_TARGET_OFFSET + (i * FLASH_PAGE_SIZE) as u32;
+                if f.read(offset, &mut buf).is_ok() && buf[0] == INVALID_BYTE {
+                    entry_index = i;
+                    break;
+                }
+                entry_index = i + 1;
             }
-            entry_index = i + 1;
-        }
 
-        // Sector full - erase and reset
-        if entry_index >= ENTRIES_PER_SECTOR {
-            crate::ram_flash::erase(FLASH_TARGET_OFFSET, FLASH_SECTOR_SIZE);
-            entry_index = 0;
-        }
+            // Sector full - erase and reset
+            if entry_index >= ENTRIES_PER_SECTOR {
+                let _ = f.erase(
+                    FLASH_TARGET_OFFSET,
+                    FLASH_TARGET_OFFSET + FLASH_SECTOR_SIZE as u32,
+                );
+                entry_index = 0;
+            }
 
-        // Prepare write buffer (one flash page per entry)
-        let mut write_buf = [INVALID_BYTE; FLASH_PAGE_SIZE];
-        write_buf[0] = power_state as u8;
-        write_buf[1] = restore_mode as u8;
+            // Prepare write buffer (one flash page per entry)
+            let mut write_buf = [INVALID_BYTE; FLASH_PAGE_SIZE];
+            write_buf[0] = power_state as u8;
+            write_buf[1] = restore_mode as u8;
 
-        let offset = FLASH_TARGET_OFFSET + (entry_index * FLASH_PAGE_SIZE) as u32;
-        crate::ram_flash::program(offset, &write_buf);
+            let offset = FLASH_TARGET_OFFSET + (entry_index * FLASH_PAGE_SIZE) as u32;
+            let _ = f.write(offset, &write_buf);
+        });
     }
 
     /// Persist the current in-memory entry to flash.
@@ -164,9 +175,6 @@ impl<'d> FlashStore<'d> {
     }
 
     /// Set power state and persist it to flash (only on an actual change).
-    ///
-    /// Persistence uses the direct bootrom sequence in `ram_flash` - the
-    /// embassy-rp blocking flash path hangs on this board (see ram_flash.rs).
     pub fn set_power_state(&mut self, state: PowerState) {
         if self.current_entry.power_state != state {
             self.current_entry.power_state = state;

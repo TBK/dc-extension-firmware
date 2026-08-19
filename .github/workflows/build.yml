@@ -28,8 +28,11 @@ jobs:
       - name: Install cargo-binutils (rust-objcopy)
         run: cargo install cargo-binutils
 
-      - name: Run clippy
+      - name: Run clippy (application)
         run: cargo clippy -- -D warnings
+
+      - name: Run clippy (bootloader)
+        run: cd bootloader && cargo clippy --release -- -D warnings
 
       - name: Build and package UF2 (dev profile with debug logging)
         run: ./package.sh debug
@@ -38,11 +41,15 @@ jobs:
         run: |
           echo "Build artifacts (dev profile with debug logging):"
           ls -la target/thumbv6m-none-eabi/debug/jetkvm-dc-extension
-          ls -la jetkvm-dc-extension.uf2
+          ls -la bootloader/target/thumbv6m-none-eabi/release/jetkvm-dc-bootloader
+          ls -la jetkvm-dc-combined.uf2 jetkvm-dc-extension.bin jetkvm-dc-extension.bin.crc32
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: jetkvm-dc-extension-debug-${{ github.sha }}.uf2
-          path: jetkvm-dc-extension.uf2
+          name: jetkvm-dc-extension-debug-${{ github.sha }}
+          path: |
+            jetkvm-dc-combined.uf2
+            jetkvm-dc-extension.bin
+            jetkvm-dc-extension.bin.crc32
           retention-days: 30

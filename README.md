@@ -16,6 +16,8 @@ This is a power monitoring and control module for the JetKVM platform, built on 
 - Voltage, current, and power measurements via INA219 sensor
 - Power state control through UART interface
 - Persistent power state and restore mode storage in flash
+- Firmware updates over the same UART (no BOOTSEL button needed), installed
+  power-loss-safely by an embassy-boot A/B bootloader with automatic revert
 
 If you've found an issue and want to report it, please check our [Issues](https://github.com/jetkvm/dc-extension-firmware/issues) page. Make sure the description contains information about the firmware version you're using, your hardware setup, and a clear explanation of the steps to reproduce the issue.
 
@@ -63,28 +65,59 @@ cargo build
 
 This produces a debug build with defmt RTT logging enabled, useful for development with a debug probe.
 
-### Generate UF2 File
+### Packaging
 
-Always package via `package.sh` — it pads the image with one 4 KB sector of
-0xFF after `.data`, because BOOTSEL flashing has proven unreliable in the final
-pages of the image on some units and `.data` carries the RAM-resident
-flash-write routine:
+Always package via `package.sh` (`./package.sh` for release, `./package.sh
+debug` for a dev build). It builds the application and the bootloader and
+produces:
 
-For release:
-```bash
-./package.sh
+| Artifact                       | Purpose                                        |
+|--------------------------------|------------------------------------------------|
+| `jetkvm-dc-combined.uf2`       | Bootloader + application, for the one-time install of the A/B layout |
+| `jetkvm-dc-extension.bin`      | Application-only wire image for UART updates   |
+| `jetkvm-dc-extension.bin.crc32`| CRC-32 (zlib) of the wire image, consumed by the update script |
+
+### Flash layout
+
+```
+0x000000  boot2 + bootloader (24K reserved)   installed once, never updated
+0x006000  bootloader swap state (4K)
+0x007000  ACTIVE partition (256K)             the running application
+0x080000  settings sector (4K)                power state / restore mode
+0x100000  DFU partition (260K)                updates staged here
 ```
 
-For development:
-```bash
-./package.sh debug
-```
+The bootloader (embassy-boot) swaps a verified DFU image into ACTIVE page by
+page with progress tracked in the state sector, so power loss during an
+update is recoverable at any instant. The application confirms itself on its
+first healthy telemetry tick; an update that crashes or hangs before
+confirming is automatically reverted to the previous image.
 
-Both produce `jetkvm-dc-extension.uf2`.
+All flash erase/program (settings, DFU staging, and the bootloader's swap)
+goes through `direct_flash.rs`: direct bootrom calls from a RAM-resident
+routine that feeds the hardware watchdog on every operation, so multi-sector
+erases can never outlast the watchdog regardless of the flash chip's speed.
+The combined install image is tail-padded with one 0xFF sector because
+BOOTSEL flashing has proven unreliable in the final pages of an image on
+some units, and `.data` - carrying the RAM-resident flash routines - sits at
+the image tail. UART updates are immune (CRC-verified read-back).
 
 ## Flashing
 
-See the [DC Extension OTA Updates documentation](https://jetkvm.com/docs/advanced-usage/ota-updates#dc-extension) for flashing instructions.
+First install (or recovery): put the board in BOOTSEL mode and flash
+`jetkvm-dc-combined.uf2` — preferably with verification, since BOOTSEL
+flashing has proven unreliable on some units:
+
+```bash
+sudo picotool load -v -x jetkvm-dc-combined.uf2
+```
+
+Subsequent updates need no physical access: send `jetkvm-dc-extension.bin`
+over the extension's UART with `tools/uart-fw-update.sh` (run on the
+JetKVM; see the script header for usage). The wire protocol is documented in
+`src/fw_update.rs`.
+
+See also the [DC Extension OTA Updates documentation](https://jetkvm.com/docs/advanced-usage/ota-updates#dc-extension).
 
 ### Using probe-rs (development)
 
@@ -149,6 +182,7 @@ This allows the main JetKVM system to detect firmware crashes and the device to 
 | `RESTORE_MODE_ON\n`         | Set restore mode to ON         |
 | `RESTORE_MODE_LAST_STATE\n` | Set restore mode to last state |
 | `VERSION\n`                 | Request firmware version       |
+| `FW_UPDATE\n`               | Start a firmware update (see `src/fw_update.rs` for the wire protocol) |
 
 ### Responses
 
@@ -168,11 +202,16 @@ EXTVER;<name>;<version>\n
 src/
 ├── main.rs          # Entry point, task orchestration
 ├── config.rs        # Configuration constants
+├── direct_flash.rs  # Bootrom-direct flash driver (erase/program, watchdog-fed)
 ├── flash_store.rs   # Persistent storage for power state
+├── fw_update.rs     # UART firmware-update protocol (writes the DFU partition)
 ├── power_control.rs # GPIO power output control
 ├── uart_handler.rs  # UART command processing
-├── ram_flash.rs     # RAM-resident bootrom flash erase/program routines
 └── panic_handler.rs # Release-build panic handler (UART report + reset)
+bootloader/          # embassy-boot bootloader (separate crate, installed once)
+tools/
+├── bin2uf2.py        # RP2040 bin -> UF2 converter, used by package.sh
+└── uart-fw-update.sh # Update sender, runs on the JetKVM against /dev/ttyS3
 ```
 
 ## Dependencies
@@ -180,6 +219,7 @@ src/
 - `embassy-executor` - Async executor for embedded
 - `embassy-rp` - RP2040 HAL with Embassy support
 - `embassy-time` - Async timers
+- `embassy-boot-rp` - A/B bootloader and firmware updater
 - `ina219` - INA219 power monitor driver
 - `defmt` / `defmt-rtt` - Efficient logging for embedded (dev builds only)
 - `panic-probe` - Panic handler with debug output (dev builds only)

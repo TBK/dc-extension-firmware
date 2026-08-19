@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "[0-9]+.[0-9]+.[0-9]+"
 
 jobs:
   release:
@@ -32,9 +32,13 @@ jobs:
         run: |
           echo "Build artifacts (release profile, no debug logging):"
           ls -la target/thumbv6m-none-eabi/release/jetkvm-dc-extension
-          ls -la jetkvm-dc-extension.uf2
+          ls -la bootloader/target/thumbv6m-none-eabi/release/jetkvm-dc-bootloader
+          ls -la jetkvm-dc-combined.uf2 jetkvm-dc-extension.bin jetkvm-dc-extension.bin.crc32
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v1
         with:
-          files: jetkvm-dc-extension.uf2
+          files: |
+            jetkvm-dc-combined.uf2
+            jetkvm-dc-extension.bin
+            jetkvm-dc-extension.bin.crc32

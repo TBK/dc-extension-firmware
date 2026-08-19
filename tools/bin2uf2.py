@@ -7,8 +7,6 @@ UF2_MAGIC0, UF2_MAGIC1, UF2_END = 0x0A324655, 0x9E5D5157, 0x0AB16F30
 FLAG_FAMILY = 0x00002000
 src, dst = sys.argv[1], sys.argv[2]
 data = open(src, 'rb').read()
-if data[:2] == b'':  # noop
-    pass
 chunk = 256
 blocks = (len(data) + chunk - 1) // chunk
 out = bytearray()

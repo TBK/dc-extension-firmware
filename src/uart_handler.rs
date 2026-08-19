@@ -25,6 +25,7 @@ pub enum Command {
     RestoreModeOn,
     RestoreModeLastState,
     Version,
+    FwUpdate,
     Unknown,
 }
 
@@ -105,6 +106,7 @@ impl UartHandler {
                 "RESTORE_MODE_ON" => Command::RestoreModeOn,
                 "RESTORE_MODE_LAST_STATE" => Command::RestoreModeLastState,
                 "VERSION" => Command::Version,
+                "FW_UPDATE" => Command::FwUpdate,
                 _ => Command::Unknown,
             }
         } else {
@@ -142,5 +144,30 @@ impl UartHandler {
         // Format: EXTVER;<name>;<version>\n
         let _ = core::fmt::write(&mut buf, format_args!("EXTVER;{};{}\n", NAME, VERSION));
         let _ = self.tx.write_all(buf.as_bytes()).await;
+    }
+
+    /// Send raw bytes (used by the firmware-update protocol).
+    pub async fn write_bytes(&mut self, bytes: &[u8]) {
+        let _ = self.tx.write_all(bytes).await;
+    }
+
+    /// Read exactly `buf.len()` raw bytes from the UART.
+    ///
+    /// Bypasses the line parser - the firmware-update protocol transfers
+    /// binary data. Any partial command line accumulated by `read_command`
+    /// is discarded first so stray bytes can't leak into the binary stream.
+    pub async fn read_exact(&mut self, buf: &mut [u8]) {
+        self.line_pos = 0;
+        let mut filled = 0;
+        while filled < buf.len() {
+            let chunk = match self.rx.fill_buf().await {
+                Ok(c) if !c.is_empty() => c,
+                _ => continue,
+            };
+            let n = chunk.len().min(buf.len() - filled);
+            buf[filled..filled + n].copy_from_slice(&chunk[..n]);
+            self.rx.consume(n);
+            filled += n;
+        }
     }
 }

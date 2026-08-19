@@ -21,3 +21,4 @@ Thumbs.db
 # Firmware build outputs (regenerable from cargo + objcopy/bin2uf2)
 *.bin
 *.uf2
+*.bin.crc32
